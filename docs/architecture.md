@@ -50,13 +50,18 @@ Policy parameters such as the workspace ID and DCR IDs are built from **names** 
                                      │ VNet peering
              ┌───────────────────────┴─── Workload subscription ─┐
              │  Spoke VNet 10.1.0.0/24                           │
-             │   ├── snet-app (10.1.0.0/25)   NSG + UDR → FW      │
-             │   └── snet-private-endpoints (10.1.0.128/25) NSG  │
+             │   ├── snet-app                   10.1.0.0/26   VMs │
+             │   ├── snet-private-endpoints     10.1.0.64/26      │
+             │   ├── snet-integration-logicapp  10.1.0.128/27 *   │
+             │   ├── snet-integration-functions 10.1.0.160/27 *   │
+             │   └── (free)                     10.1.0.192/26     │
+             │  every subnet: NSG; app + integration: UDR → FW   │
+             │  * delegated to Microsoft.Web/serverFarms         │
              └───────────────────────────────────────────────────┘
 ```
 
 - **Egress:** a route table on the app subnet sends `0.0.0.0/0` to the firewall. The firewall policy allows HTTP/HTTPS only to the FQDNs in `firewall_allowed_egress_fqdns` and denies everything else.
-- **Name resolution:** with the defaults, spokes use Azure-provided DNS. To resolve private endpoints centrally, set `dns_resolver_enabled = true` and a Standard or Premium firewall. The firewall then runs as a DNS proxy in front of the resolver, and spokes point at it automatically.
+- **Name resolution:** with the defaults, spokes use Azure-provided DNS, and the hub's private DNS zones for Key Vault, Storage, SQL and App Service are linked to the spoke. Private endpoint names therefore resolve to private IPs without a DNS server. For a central model, set `dns_resolver_enabled = true` with a Standard or Premium firewall. The firewall then acts as a DNS proxy in front of the resolver, spokes point at it automatically, and the per-spoke links are dropped.
 - **Gateway transit:** when a VPN or ExpressRoute gateway is enabled, spoke peerings switch to `use_remote_gateways` automatically.
 
 ## 5. Application landing zones: subscription vending
@@ -83,3 +88,19 @@ Adding another application means adding another module call, or turning `workloa
 - **No secrets:** GitHub's OIDC token is exchanged for an Entra ID token through federated credentials. The credentials are scoped to this repo's `main` branch, its pull requests and the `production` environment.
 - **What you approve is what runs:** apply uses the exact plan file and provider lock file from the plan job.
 - **One writer at a time:** a shared `concurrency` group serializes all runs against the state file.
+
+## 6. Workloads: service modules
+
+`modules/` holds one module per service, and `workloads/app1` shows them used together:
+
+```
+ Function App ──(managed identity)──► Key Vault (secrets)
+      │  └────(managed identity)──► Storage (blob data)
+      │  └────(managed identity)──► own storage (runtime state, no keys)
+ Logic App ────(managed identity)──► Key Vault
+      └──────────────────────────► own storage (keys; private endpoints only)
+ VM ──(Entra ID sign-in via Bastion)
+ SQL ──(Entra ID only; apps connect with managed identity)
+```
+
+Inbound traffic to every service arrives through a private endpoint in `snet-private-endpoints`. The two app platforms send all outbound traffic through their integration subnets, so it passes the hub firewall like everything else. Diagnostics reach the central workspace through the ALZ `Deploy-Diag-LogsCat` policy, so the modules don't configure diagnostic settings themselves.

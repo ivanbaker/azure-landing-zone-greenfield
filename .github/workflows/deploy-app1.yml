@@ -1,0 +1,30 @@
+name: Deploy app1 workload
+
+# Deploy the platform first: this workload uses the app1 spoke, private DNS
+# zones and Log Analytics workspace that infra/ creates.
+on:
+  pull_request:
+    branches: [main]
+    paths: ["workloads/app1/**", "modules/**", ".github/workflows/deploy-app1.yml", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["workloads/app1/**", "modules/**", ".github/workflows/deploy-app1.yml", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tfstate-app1
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    uses: ./.github/workflows/terraform.yml
+    with:
+      working_directory: workloads/app1
+      state_key: workloads/app1.tfstate
+      var_file: app1.tfvars
+      stack_name: app1

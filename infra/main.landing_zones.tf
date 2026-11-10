@@ -10,11 +10,21 @@ locals {
   lz_rg_name   = "rg-${local.lz.name}-network-${var.location}"
   lz_vnet_name = "vnet-${local.lz.name}-${var.location}"
 
-  # Two subnets carved from the spoke address space: application and private endpoints.
+  # Subnets carved from the spoke address space (a /24 gives two /26s and two /27s,
+  # leaving the top /26 free for growth).
   lz_subnet_prefixes = {
-    app               = cidrsubnet(local.lz.address_space, 1, 0)
-    private_endpoints = cidrsubnet(local.lz.address_space, 1, 1)
+    app                   = cidrsubnet(local.lz.address_space, 2, 0)
+    private_endpoints     = cidrsubnet(local.lz.address_space, 2, 1)
+    integration_logicapp  = cidrsubnet(local.lz.address_space, 3, 4)
+    integration_functions = cidrsubnet(local.lz.address_space, 3, 5)
   }
+
+  # App Service VNet integration subnets must be delegated to Microsoft.Web/serverFarms.
+  app_service_delegation = [{
+    name               = "Microsoft.Web.serverFarms"
+    service_delegation = { name = "Microsoft.Web/serverFarms" }
+  }]
+  route_via_firewall = local.features.firewall_enabled ? { key_reference = "to_hub" } : null
 
   spoke_dns_servers = (
     local.features.dns_resolver_enabled && local.firewall_is_standard
@@ -66,6 +76,11 @@ module "workload_landing_zone" {
       resource_group_key = "network"
       tags               = var.tags
     }
+    integration = {
+      name               = "nsg-${local.lz.name}-integration-${var.location}"
+      resource_group_key = "network"
+      tags               = var.tags
+    }
   }
 
   route_table_enabled = local.features.firewall_enabled
@@ -101,13 +116,27 @@ module "workload_landing_zone" {
           name                   = "snet-app"
           address_prefix         = local.lz_subnet_prefixes.app
           network_security_group = { key_reference = "app" }
-          route_table            = local.features.firewall_enabled ? { key_reference = "to_hub" } : null
+          route_table            = local.route_via_firewall
         }
         private_endpoints = {
           name                              = "snet-private-endpoints"
           address_prefix                    = local.lz_subnet_prefixes.private_endpoints
           network_security_group            = { key_reference = "private_endpoints" }
           private_endpoint_network_policies = "Enabled"
+        }
+        integration_logicapp = {
+          name                   = "snet-integration-logicapp"
+          address_prefix         = local.lz_subnet_prefixes.integration_logicapp
+          network_security_group = { key_reference = "integration" }
+          route_table            = local.route_via_firewall
+          delegations            = local.app_service_delegation
+        }
+        integration_functions = {
+          name                   = "snet-integration-functions"
+          address_prefix         = local.lz_subnet_prefixes.integration_functions
+          network_security_group = { key_reference = "integration" }
+          route_table            = local.route_via_firewall
+          delegations            = local.app_service_delegation
         }
       }
 
@@ -162,4 +191,39 @@ module "workload_landing_zone" {
 
   # The Corp/Online management groups must exist before the subscription moves.
   depends_on = [module.governance]
+}
+
+# Link the hub's private DNS zones to the spoke so names such as
+# <vault>.vault.azure.net resolve to private endpoint IPs from the spoke
+# (without a DNS Private Resolver in the hub). Zone IDs are built from names so
+# the for_each keys are known at plan time.
+locals {
+  spoke_private_dns_zones = toset([
+    "privatelink.vaultcore.azure.net",
+    "privatelink.blob.core.windows.net",
+    "privatelink.file.core.windows.net",
+    "privatelink.queue.core.windows.net",
+    "privatelink.table.core.windows.net",
+    "privatelink.database.windows.net",
+    "privatelink.azurewebsites.net",
+  ])
+  # Not needed when spokes already use the hub's DNS proxy + resolver.
+  link_spoke_to_dns = (
+    local.lz.enabled && local.features.private_dns_zones_enabled &&
+    !(local.features.dns_resolver_enabled && local.firewall_is_standard)
+  )
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "spoke" {
+  for_each = local.link_spoke_to_dns ? local.spoke_private_dns_zones : toset([])
+  provider = azurerm.connectivity
+
+  name                  = "link-${local.lz_vnet_name}"
+  resource_group_name   = azurerm_resource_group.dns.name
+  private_dns_zone_name = each.key
+  virtual_network_id    = module.workload_landing_zone[0].virtual_network_resource_ids["spoke"]
+  registration_enabled  = false
+  tags                  = var.tags
+
+  depends_on = [module.hub_and_spoke]
 }

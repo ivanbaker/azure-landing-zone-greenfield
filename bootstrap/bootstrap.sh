@@ -27,7 +27,6 @@ LOCATION="${LOCATION:-eastus2}"
 
 STATE_RG="rg-tfstate"
 STATE_CONTAINER="tfstate"
-STATE_KEY="landing-zone.tfstate"
 APP_NAME="gh-${REPO//\//-}-landing-zone"
 SUFFIX="$(echo -n "$REPO$SUBSCRIPTION_ID" | sha1sum | cut -c1-8)"
 STORAGE_ACCOUNT="sttfstate${SUFFIX}"
@@ -122,7 +121,6 @@ Bootstrap complete. Add these to GitHub: Settings > Secrets and variables > Acti
   TF_STATE_RESOURCE_GROUP  = $STATE_RG
   TF_STATE_STORAGE_ACCOUNT = $STORAGE_ACCOUNT
   TF_STATE_CONTAINER       = $STATE_CONTAINER
-  TF_STATE_KEY             = $STATE_KEY
   SUBSCRIPTION_IDS       = {"management":"$SUBSCRIPTION_ID","connectivity":"$CONNECTIVITY_SUBSCRIPTION_ID","workload":"${WORKLOAD_SUBSCRIPTION_ID:-<id>}"}
   SECURITY_CONTACT_EMAIL = <your email>
 
@@ -131,7 +129,7 @@ yourself as a required reviewer so every apply waits for your approval.
 EOF
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  read -r -p "GitHub CLI detected. Set the first seven variables on $REPO now? [y/N] " answer
+  read -r -p "GitHub CLI detected. Set the first six variables on $REPO now? [y/N] " answer
   if [[ "$answer" =~ ^[Yy]$ ]]; then
     gh variable set AZURE_CLIENT_ID          --repo "$REPO" --body "$APP_ID"
     gh variable set AZURE_TENANT_ID          --repo "$REPO" --body "$TENANT_ID"
@@ -139,7 +137,6 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     gh variable set TF_STATE_RESOURCE_GROUP  --repo "$REPO" --body "$STATE_RG"
     gh variable set TF_STATE_STORAGE_ACCOUNT --repo "$REPO" --body "$STORAGE_ACCOUNT"
     gh variable set TF_STATE_CONTAINER       --repo "$REPO" --body "$STATE_CONTAINER"
-    gh variable set TF_STATE_KEY             --repo "$REPO" --body "$STATE_KEY"
     echo "Done. Set SUBSCRIPTION_IDS and SECURITY_CONTACT_EMAIL yourself."
   fi
 fi

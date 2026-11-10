@@ -1,0 +1,24 @@
+# Terraform working files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.txt
+crash.log
+crash.*.log
+.terraform.tfstate.lock.info
+
+# Local-only inputs (subscription IDs, backend settings)
+*.auto.tfvars
+!*.auto.tfvars.example
+backend.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
