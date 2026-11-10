@@ -33,3 +33,17 @@ module "governance" {
 
   enable_telemetry = var.enable_telemetry
 }
+
+# The ALZ provider can't work out the roles for one policy assignment (it
+# reports "PolicyRoleAssignmentError ... Deploy-MCSB2-Monitoring" during plan),
+# because the identity is passed into a nested policy set. Grant the roles it
+# names explicitly, so the policy can deploy the monitoring agent and its
+# managed identity to VMs. See https://github.com/Azure/alzlib/issues/189
+resource "azurerm_role_assignment" "mcsb2_monitoring" {
+  for_each = toset(["Contributor", "User Access Administrator"])
+
+  scope                = module.governance.management_group_resource_ids["alz"]
+  role_definition_name = each.key
+  principal_id         = module.governance.policy_assignment_identity_ids["alz/Deploy-MCSB2-Monitoring"]
+  principal_type       = "ServicePrincipal"
+}
