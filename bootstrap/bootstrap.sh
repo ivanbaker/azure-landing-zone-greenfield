@@ -98,9 +98,32 @@ add_federated_credential() {
     }" --output none
   fi
 }
-add_federated_credential "github-pull-request" "repo:${REPO}:pull_request"
-add_federated_credential "github-main"         "repo:${REPO}:ref:refs/heads/main"
-add_federated_credential "github-env-production" "repo:${REPO}:environment:production"
+# GitHub sends one of two subject formats, depending on the repository:
+#   repo:<owner>/<repo>:...                        (classic)
+#   repo:<owner>@<owner-id>/<repo>@<repo-id>:...   (immutable IDs, newer repos)
+# Register both so sign-in works either way.
+SUBJECT_PREFIXES=("repo:${REPO}")
+OWNER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+IDS="$(curl -fsSL "https://api.github.com/repos/${REPO}" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["owner"]["id"], d["id"])' 2>/dev/null || true)"
+if [[ -z "$IDS" ]] && command -v gh >/dev/null 2>&1; then
+  IDS="$(gh api "repos/${REPO}" --jq '"\(.owner.id) \(.id)"' 2>/dev/null || true)"
+fi
+if [[ -n "$IDS" ]]; then
+  read -r OWNER_ID REPO_ID <<<"$IDS"
+  SUBJECT_PREFIXES+=("repo:${OWNER}@${OWNER_ID}/${REPO_NAME}@${REPO_ID}")
+else
+  echo "    Could not look up the repository IDs (private repo and no gh login?)."
+  echo "    If sign-in fails with AADSTS700213, rerun after 'gh auth login'."
+fi
+
+for i in "${!SUBJECT_PREFIXES[@]}"; do
+  prefix="${SUBJECT_PREFIXES[$i]}"
+  suffix=""; [[ "$i" -gt 0 ]] && suffix="-ids"
+  add_federated_credential "github-pull-request${suffix}"   "${prefix}:pull_request"
+  add_federated_credential "github-main${suffix}"           "${prefix}:ref:refs/heads/main"
+  add_federated_credential "github-env-production${suffix}" "${prefix}:environment:production"
+done
 
 echo "==> Assigning roles to the pipeline identity"
 # Owner at the Tenant Root Group: needed to create management groups, assign
