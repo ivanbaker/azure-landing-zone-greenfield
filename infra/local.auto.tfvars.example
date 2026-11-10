@@ -1,0 +1,9 @@
+# Copy to local.auto.tfvars for local runs. That file is git-ignored.
+# Add identity = "<subscription id>" to subscription_ids if you have an identity subscription.
+subscription_ids = {
+  management   = "00000000-0000-0000-0000-000000000000"
+  connectivity = "00000000-0000-0000-0000-000000000000"
+  workload     = "00000000-0000-0000-0000-000000000000"
+}
+
+security_contact_email = "you@example.com"
