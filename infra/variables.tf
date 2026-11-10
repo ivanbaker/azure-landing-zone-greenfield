@@ -123,6 +123,12 @@ variable "firewall_allowed_egress_fqdns" {
     "*.azure.com",
     "github.com",
     "*.github.com",
+    # Azure control plane and identity, used by App Service / Functions / Logic Apps.
+    "login.microsoftonline.com",
+    "management.azure.com",
+    "*.azurewebsites.net",
+    "*.logic.azure.com",
+    "*.monitor.azure.com",
   ]
   description = "FQDNs that workload spokes may reach over HTTP/HTTPS through the hub firewall. Everything else is denied."
 }

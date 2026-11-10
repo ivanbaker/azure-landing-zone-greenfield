@@ -1,0 +1,29 @@
+name: Deploy platform landing zone
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/deploy-platform.yml", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/deploy-platform.yml", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC sign-in to Azure, no stored secrets
+  contents: read
+  pull-requests: write
+
+# One run at a time against this state file.
+concurrency:
+  group: tfstate-platform
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    uses: ./.github/workflows/terraform.yml
+    with:
+      working_directory: infra
+      state_key: landing-zone.tfstate
+      var_file: landing-zone.tfvars
+      stack_name: platform

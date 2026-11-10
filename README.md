@@ -10,6 +10,7 @@ The repository deploys:
 | **Management** | A central Log Analytics workspace, Azure Monitor Agent managed identity, and data collection rules for VM Insights, Change Tracking and Defender for SQL. Microsoft Sentinel is optional |
 | **Connectivity** | A hub VNet with Azure Firewall and firewall policy, and private DNS zones for Private Link. Bastion, VPN or ExpressRoute gateways, DNS Private Resolver and DDoS Network Protection are optional |
 | **Application landing zone** | A subscription moved into **Corp** using the ALZ subscription vending pattern. It has a spoke VNet peered to the hub, a default route through the firewall, NSGs on every subnet, RBAC for the app team, and an optional budget |
+| **Service modules** | Reusable modules for Key Vault, Storage, Virtual Machines, Azure SQL, Logic Apps Standard and Function Apps. All are private-endpoint-only and compliant with the landing zone policies. An example workload (`workloads/app1`) deploys all six into the spoke |
 | **Delivery** | GitHub Actions: lint and security scan on every PR, `terraform plan` posted to the PR, and `apply` gated by an environment approval. Sign-in uses OIDC (no stored secrets). A manual destroy workflow is included |
 
 ## Architecture
@@ -46,8 +47,9 @@ flowchart TB
 
     subgraph APP_SUB["Workload subscription (Corp)"]
         subgraph SPOKE["Spoke VNet 10.1.0.0/24"]
-            APPSN["snet-app + NSG + UDR"]
-            PESN["snet-private-endpoints + NSG"]
+            APPSN["snet-app: VM"]
+            PESN["snet-private-endpoints: Key Vault, Storage, SQL, Logic App, Function App"]
+            INTSN["snet-integration-*: App Service VNet integration"]
         end
     end
 
@@ -56,6 +58,7 @@ flowchart TB
     CORP -.-> APP_SUB
     SPOKE <-->|peering| HUB
     APPSN -->|0.0.0.0/0| FW
+    INTSN -->|0.0.0.0/0| FW
     MGMT_SUB -. diagnostics from all subscriptions .- LAW
 ```
 
@@ -75,8 +78,13 @@ More detail: [docs/architecture.md](docs/architecture.md). The reasons behind ea
 │   ├── locals.tf              Naming, policy parameters, subscription placement
 │   ├── variables.tf / outputs.tf / providers.tf / terraform.tf
 │   └── landing-zone.tfvars    Committed, non-sensitive settings
+├── modules/                   Reusable service modules (see modules/README.md)
+│   ├── key-vault/  storage-account/  virtual-machine/
+│   └── sql-database/  logic-app/  function-app/
+├── workloads/app1/            Example application using all six modules
 ├── docs/
-└── .github/workflows/         ci.yml, deploy.yml, destroy.yml
+└── .github/workflows/         ci.yml, terraform.yml (reusable), deploy-platform.yml,
+                               deploy-app1.yml, destroy.yml
 ```
 
 ## Prerequisites
@@ -102,7 +110,7 @@ This creates the remote state storage account and an app registration with feder
 | Variable | Example |
 |---|---|
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | printed by bootstrap |
-| `TF_STATE_RESOURCE_GROUP`, `TF_STATE_STORAGE_ACCOUNT`, `TF_STATE_CONTAINER`, `TF_STATE_KEY` | printed by bootstrap |
+| `TF_STATE_RESOURCE_GROUP`, `TF_STATE_STORAGE_ACCOUNT`, `TF_STATE_CONTAINER` | printed by bootstrap |
 | `SUBSCRIPTION_IDS` | `{"management":"…","connectivity":"…","workload":"…"}` |
 | `SECURITY_CONTACT_EMAIL` | `you@example.com` |
 
@@ -110,11 +118,13 @@ This creates the remote state storage account and an app registration with feder
 
 **4. Open a pull request** that changes anything under `infra/`. The plan is posted as a comment. Merge it, approve the deployment, and the apply runs. The first apply takes about 30–45 minutes, mostly for the firewall and the policy role assignments.
 
+**5. Deploy the example workload (optional).** Once the platform is in place, run *Actions → Deploy app1 workload*, or open a PR that changes `workloads/app1/` or `modules/`. It deploys a Key Vault, storage account, Linux VM, Azure SQL database, Logic App and Function App into the app1 spoke, all reachable only on private IPs. Switch services off in `workloads/app1/app1.tfvars`.
+
 ### Running locally
 
 ```bash
 cd infra
-cp backend.hcl.example backend.hcl                    # fill in from bootstrap output
+cp backend.hcl.example backend.hcl                    # fill in from bootstrap output (key = landing-zone.tfstate)
 cp local.auto.tfvars.example local.auto.tfvars        # subscription IDs + email
 az login
 terraform init -backend-config=backend.hcl
@@ -139,11 +149,13 @@ Approximate pay-as-you-go prices for US regions. Check the [Azure pricing calcul
 | **DDoS Network Protection** | off | **~$2,900** |
 | Defender for Cloud plans | per policy defaults | per protected resource |
 
-With the defaults, expect roughly **$350 a month** while it's running. Run the **Destroy landing zone** workflow when you're done.
+With the defaults, expect roughly **$350 a month** while it's running.
+
+The **app1 workload** adds roughly $350–$450 a month: Logic App WS1 plan (~$175), Function App P0v3 plan (~$60), D2s_v5 VM (~$70 plus disks), serverless SQL (a few dollars when idle), plus storage, Key Vault and private endpoints (about $7 each, 12 in total). Run the **Destroy landing zone** workflow when you're done.
 
 ## Teardown
 
-Run *Actions → Destroy landing zone → Run workflow* and type `destroy` to confirm. Policies may have deployed resources outside Terraform's state, such as Defender export or Service Health alert resource groups. Delete those by hand if they remain. Platform subscriptions are moved back to the tenant's default management group, which is normally the Tenant Root Group.
+Run *Actions → Destroy landing zone → Run workflow*, pick **app1** first and then **platform**, and type `destroy` to confirm each time. Key Vaults have purge protection, so a destroyed vault's name stays reserved for 90 days. Policies may have deployed resources outside Terraform's state, such as Defender export or Service Health alert resource groups. Delete those by hand if they remain. Platform subscriptions are moved back to the tenant's default management group, which is normally the Tenant Root Group.
 
 ## Roadmap
 

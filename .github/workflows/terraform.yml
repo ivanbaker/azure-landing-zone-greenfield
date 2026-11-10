@@ -1,0 +1,176 @@
+name: Terraform (reusable)
+
+# Shared plan/apply logic, called by deploy-platform.yml and deploy-app1.yml.
+# Pull request  -> terraform plan, posted as a PR comment.
+# Push / manual -> terraform plan, then apply after approval on the
+#                  "production" environment.
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Terraform root module, e.g. infra
+        required: true
+        type: string
+      state_key:
+        description: Blob name for this root's state file
+        required: true
+        type: string
+      var_file:
+        description: tfvars file inside working_directory
+        required: true
+        type: string
+      stack_name:
+        description: Label used in PR comments and summaries
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VERSION: "~1.13"
+  # Terraform, azurerm, azapi and alz providers all read these.
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  # Environment-specific inputs kept out of the repo.
+  TF_VAR_subscription_ids: ${{ vars.SUBSCRIPTION_IDS }}
+  TF_VAR_security_contact_email: ${{ vars.SECURITY_CONTACT_EMAIL }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Check repository variables
+        run: |
+          missing=""
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID TF_STATE_RESOURCE_GROUP TF_STATE_STORAGE_ACCOUNT TF_STATE_CONTAINER SUBSCRIPTION_IDS; do
+            [ -z "${!name}" ] && missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=Azure not configured::Missing repository variables:$missing. Run bootstrap/bootstrap.sh and add them under Settings > Secrets and variables > Actions > Variables (see README)."
+            exit 1
+          fi
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+          TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+          TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+          SUBSCRIPTION_IDS: ${{ vars.SUBSCRIPTION_IDS }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.state_key }}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -var-file=${{ inputs.var_file }} -detailed-exitcode -out=tfplan -no-color > plan.txt
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Terraform plan: ${{ inputs.stack_name }}'
+            echo
+            grep -E '^(Plan:|No changes\.)' plan.txt || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment plan on pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ inputs.working_directory }}/plan.txt', 'utf8');
+            const summary = (plan.match(/^(Plan:.*|No changes\..*)$/m) || ['See workflow log'])[0];
+            const max = 60000;
+            const body = [
+              '### Terraform plan: ${{ inputs.stack_name }}',
+              `**${summary}**`,
+              '<details><summary>Full plan</summary>',
+              '',
+              '```',
+              plan.length > max ? plan.slice(-max) + '\n... (truncated, see workflow log)' : plan,
+              '```',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Upload plan
+        if: github.event_name != 'pull_request' && steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.stack_name }}
+          # The lock file goes with the plan so apply uses the exact same provider versions.
+          path: |
+            ${{ inputs.working_directory }}/tfplan
+            ${{ inputs.working_directory }}/.terraform.lock.hcl
+          include-hidden-files: true
+          retention-days: 5
+
+  apply:
+    name: Apply
+    needs: plan
+    if: github.event_name != 'pull_request' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: production # add yourself as a required reviewer on this environment
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.stack_name }}
+          path: ${{ inputs.working_directory }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.state_key }}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: terraform apply
+        run: terraform apply -auto-approve tfplan

@@ -27,7 +27,6 @@ LOCATION="${LOCATION:-eastus2}"
 
 STATE_RG="rg-tfstate"
 STATE_CONTAINER="tfstate"
-STATE_KEY="landing-zone.tfstate"
 APP_NAME="gh-${REPO//\//-}-landing-zone"
 SUFFIX="$(echo -n "$REPO$SUBSCRIPTION_ID" | sha1sum | cut -c1-8)"
 STORAGE_ACCOUNT="sttfstate${SUFFIX}"
@@ -99,9 +98,32 @@ add_federated_credential() {
     }" --output none
   fi
 }
-add_federated_credential "github-pull-request" "repo:${REPO}:pull_request"
-add_federated_credential "github-main"         "repo:${REPO}:ref:refs/heads/main"
-add_federated_credential "github-env-production" "repo:${REPO}:environment:production"
+# GitHub sends one of two subject formats, depending on the repository:
+#   repo:<owner>/<repo>:...                        (classic)
+#   repo:<owner>@<owner-id>/<repo>@<repo-id>:...   (immutable IDs, newer repos)
+# Register both so sign-in works either way.
+SUBJECT_PREFIXES=("repo:${REPO}")
+OWNER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+IDS="$(curl -fsSL "https://api.github.com/repos/${REPO}" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["owner"]["id"], d["id"])' 2>/dev/null || true)"
+if [[ -z "$IDS" ]] && command -v gh >/dev/null 2>&1; then
+  IDS="$(gh api "repos/${REPO}" --jq '"\(.owner.id) \(.id)"' 2>/dev/null || true)"
+fi
+if [[ -n "$IDS" ]]; then
+  read -r OWNER_ID REPO_ID <<<"$IDS"
+  SUBJECT_PREFIXES+=("repo:${OWNER}@${OWNER_ID}/${REPO_NAME}@${REPO_ID}")
+else
+  echo "    Could not look up the repository IDs (private repo and no gh login?)."
+  echo "    If sign-in fails with AADSTS700213, rerun after 'gh auth login'."
+fi
+
+for i in "${!SUBJECT_PREFIXES[@]}"; do
+  prefix="${SUBJECT_PREFIXES[$i]}"
+  suffix=""; [[ "$i" -gt 0 ]] && suffix="-ids"
+  add_federated_credential "github-pull-request${suffix}"   "${prefix}:pull_request"
+  add_federated_credential "github-main${suffix}"           "${prefix}:ref:refs/heads/main"
+  add_federated_credential "github-env-production${suffix}" "${prefix}:environment:production"
+done
 
 echo "==> Assigning roles to the pipeline identity"
 # Owner at the Tenant Root Group: needed to create management groups, assign
@@ -122,7 +144,6 @@ Bootstrap complete. Add these to GitHub: Settings > Secrets and variables > Acti
   TF_STATE_RESOURCE_GROUP  = $STATE_RG
   TF_STATE_STORAGE_ACCOUNT = $STORAGE_ACCOUNT
   TF_STATE_CONTAINER       = $STATE_CONTAINER
-  TF_STATE_KEY             = $STATE_KEY
   SUBSCRIPTION_IDS       = {"management":"$SUBSCRIPTION_ID","connectivity":"$CONNECTIVITY_SUBSCRIPTION_ID","workload":"${WORKLOAD_SUBSCRIPTION_ID:-<id>}"}
   SECURITY_CONTACT_EMAIL = <your email>
 
@@ -131,7 +152,7 @@ yourself as a required reviewer so every apply waits for your approval.
 EOF
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  read -r -p "GitHub CLI detected. Set the first seven variables on $REPO now? [y/N] " answer
+  read -r -p "GitHub CLI detected. Set the first six variables on $REPO now? [y/N] " answer
   if [[ "$answer" =~ ^[Yy]$ ]]; then
     gh variable set AZURE_CLIENT_ID          --repo "$REPO" --body "$APP_ID"
     gh variable set AZURE_TENANT_ID          --repo "$REPO" --body "$TENANT_ID"
@@ -139,7 +160,6 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     gh variable set TF_STATE_RESOURCE_GROUP  --repo "$REPO" --body "$STATE_RG"
     gh variable set TF_STATE_STORAGE_ACCOUNT --repo "$REPO" --body "$STORAGE_ACCOUNT"
     gh variable set TF_STATE_CONTAINER       --repo "$REPO" --body "$STATE_CONTAINER"
-    gh variable set TF_STATE_KEY             --repo "$REPO" --body "$STATE_KEY"
     echo "Done. Set SUBSCRIPTION_IDS and SECURITY_CONTACT_EMAIL yourself."
   fi
 fi

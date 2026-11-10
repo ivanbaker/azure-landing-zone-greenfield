@@ -2,6 +2,9 @@
 # management groups, archetypes and Azure Policy definitions published by Microsoft.
 # The library version is pinned so a policy change upstream never lands by surprise.
 provider "alz" {
+  # The one assignment this warns about is handled in main.governance.tf.
+  suppress_warning_policy_role_assignments = true
+
   library_references = [
     {
       path = "platform/alz"

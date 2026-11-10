@@ -1,0 +1,66 @@
+name: Destroy landing zone
+
+# Manual teardown so a lab does not keep running up charges.
+# Destroy app1 before the platform (the workload lives in the platform's spoke).
+# Type "destroy" to confirm. Requires approval on the "production" environment.
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: Which deployment to destroy
+        required: true
+        type: choice
+        options: [app1, platform]
+      confirm:
+        description: 'Type "destroy" to remove every resource this repo manages'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: tfstate-${{ github.event.inputs.stack }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VERSION: "~1.13"
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_subscription_ids: ${{ vars.SUBSCRIPTION_IDS }}
+  TF_VAR_security_contact_email: ${{ vars.SECURITY_CONTACT_EMAIL }}
+
+jobs:
+  destroy:
+    if: github.event.inputs.confirm == 'destroy'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      WORKDIR: ${{ github.event.inputs.stack == 'platform' && 'infra' || 'workloads/app1' }}
+      STATE_KEY: ${{ github.event.inputs.stack == 'platform' && 'landing-zone.tfstate' || 'workloads/app1.tfstate' }}
+      VAR_FILE: ${{ github.event.inputs.stack == 'platform' && 'landing-zone.tfvars' || 'app1.tfvars' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=${{ env.STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: terraform destroy
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform destroy -auto-approve -var-file=${{ env.VAR_FILE }}
