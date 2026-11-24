@@ -25,7 +25,7 @@ resource "azurerm_resource_group" "dns" {
 
 module "hub_and_spoke" {
   source  = "Azure/avm-ptn-alz-connectivity-hub-and-spoke-vnet/azurerm"
-  version = "0.18.1"
+  version = "0.18.4"
 
   providers = {
     azurerm = azurerm.connectivity
