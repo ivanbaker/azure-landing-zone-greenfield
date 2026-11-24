@@ -16,7 +16,7 @@
 #       └── Decommissioned
 module "governance" {
   source  = "Azure/avm-ptn-alz/azurerm"
-  version = "0.22.0"
+  version = "0.23.0"
 
   architecture_name  = "alz"
   parent_resource_id = local.root_parent_id
